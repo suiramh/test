@@ -1,7 +1,8 @@
 import io
 import re
+from datetime import date
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,7 @@ st.set_page_config(
 )
 
 # ------------------------------
-# Helpers (ähnlich wie im Skript)
+# Helpers
 # ------------------------------
 def _norm_amount(series: pd.Series) -> pd.Series:
     def parse_one(x):
@@ -92,11 +93,7 @@ def normalize_schema(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
     else:
         out["counterparty"] = ""
 
-    account = None
-    if iban_col:
-        account = df[iban_col].astype(str)
-    else:
-        account = source_name
+    account = df[iban_col].astype(str) if iban_col else source_name
     out["account"] = account
 
     out["purpose"] = df[usage1].astype(str) if usage1 else ""
@@ -141,10 +138,10 @@ def apply_categories(df: pd.DataFrame, rules: pd.DataFrame) -> pd.DataFrame:
         patt = str(row["pattern"])
         cat  = str(row["category"])
         try:
-            mask = hay.str.contains(patt, case=False, regex=True, na=False)
-            df.loc[mask, "category"] = cat
+            mask = hay.str_contains(patt, case=False, regex=True, na=False)  # pandas 2.1+ alias
         except Exception:
-            continue
+            mask = hay.str.contains(patt, case=False, regex=True, na=False)
+        df.loc[mask, "category"] = cat
     return df
 
 
@@ -173,42 +170,87 @@ st.caption("Lade deine Bank-CSV/XLSX-Dateien hoch, wende optionale Kategorienreg
 uploaded = st.file_uploader("Bank-Exporte (mehrere Dateien erlaubt)", type=["csv", "xlsx", "xls"], accept_multiple_files=True)
 rules_file = st.file_uploader("Optional: Regeln (CSV mit Spalten pattern, category)", type=["csv"])
 
-col_left, col_right = st.columns(2)
-with col_left:
-    since = st.date_input("Seit (optional)")
-with col_right:
-    until = st.date_input("Bis (optional)")
-
 if uploaded:
+    st.info("Nach dem Upload siehst du unten eine **Header‑Mapping‑Preview** pro Datei. So erkennst du, welche Spalten zugeordnet wurden.")
     frames = []
     for up in uploaded:
         try:
-            if up.name.lower().endswith((".xlsx", ".xls")):
-                df = pd.read_excel(up)
+            name_lower = up.name.lower()
+            if name_lower.endswith((".xlsx", ".xls")):
+                if name_lower.endswith(".xlsx"):
+                    df = pd.read_excel(up, engine="openpyxl")
+                else:
+                    df = pd.read_excel(up, engine="xlrd")
             else:
-                # CSV: auto delimiter
-                up_bytes = up.read()
-                df = pd.read_csv(io.BytesIO(up_bytes), sep=None, engine="python")
+                content = up.read()
+                df = pd.read_csv(io.BytesIO(content), sep=None, engine="python")
+
+            # --- Mapping-Preview ---
+            low = {c.lower(): c for c in df.columns}
+            def _pick(cands): 
+                for c in cands:
+                    for l, o in low.items():
+                        if c in l:
+                            return o
+                return None
+            preview = {
+                "date": _pick(["buchung","datum","date","wertstellung","valuta"]),
+                "booking_date": _pick(["wertstellung","valuta"]),
+                "amount": _pick(["betrag","amount"]),
+                "currency": _pick(["währung","waehrung","currency","eur"]),
+                "description_part1": _pick(["buchungstext","text","vermerk"]),
+                "description_part2": _pick(["verwendungszweck","verwendung"]),
+                "counterparty": _pick(["auftraggeber","zahlungsempfänger","zahlungs","beguenstigter","empfänger","gegenkonto","counterparty"]),
+                "account": _pick(["iban","kontonummer","account"]),
+            }
+            st.markdown(f"**{up.name}** – erkannte Spalten:")
+            st.json(preview)
+
             norm = normalize_schema(df, source_name=up.name)
             norm["source_file"] = up.name
             frames.append(norm)
         except Exception as e:
-            st.warning(f"Konnte {up.name} nicht lesen: {e}")
+            st.error(f"Fehler beim Einlesen von {up.name}: {e}")
+    frames = []
+    for up in uploaded:
+        try:
+            name_lower = up.name.lower()
+            if name_lower.endswith((".xlsx", ".xls")):
+                # Excel: lese erstes Blatt
+                if name_lower.endswith(".xlsx"):
+                    df = pd.read_excel(up, engine="openpyxl")
+                else:  # .xls
+                    df = pd.read_excel(up, engine="xlrd")
+            else:
+                # CSV: auto delimiter
+                content = up.read()
+                df = pd.read_csv(io.BytesIO(content), sep=None, engine="python")
+            norm = normalize_schema(df, source_name=up.name)
+            norm["source_file"] = up.name
+            frames.append(norm)
+        except Exception as e:
+            st.error(f"Fehler beim Einlesen von {up.name}: {e}")
 
     if frames:
-        raw = pd.concat(frames, ignore_index=True)
-        # Filter Zeitraum
-        if since:
-            raw = raw[raw["date"] >= pd.to_datetime(since)]
-        if until:
-            raw = raw[raw["date"] <= pd.to_datetime(until)]
+        raw = pd.concat(frames, ignore_index=True).sort_values("date")
+
+        # --- Zeitraumfilter explizit steuern ---
+        st.subheader("Filter")
+        use_date_filter = st.checkbox("Zeitraum filtern", value=False, help="Aktivieren, um einen Zeitraum auszuwählen")
+        if use_date_filter:
+            min_d, max_d = raw["date"].min().date(), raw["date"].max().date()
+            start, end = st.date_input("Zeitraum", value=(min_d, max_d))
+            # Falls der Nutzer einen einzelnen Tag wählt, kommt ein date-Objekt zurück
+            if isinstance(start, date) and isinstance(end, date):
+                mask = (raw["date"].dt.date >= start) & (raw["date"].dt.date <= end)
+                raw = raw[mask]
 
         # Regeln anwenden
         rules_df = load_rules_from_csv(rules_file) if rules_file else pd.DataFrame(columns=["pattern","category"])
         cat_df = apply_categories(raw, rules_df)
 
         st.subheader("Rohdaten")
-        st.dataframe(cat_df.sort_values("date"), use_container_width=True)
+        st.dataframe(cat_df, use_container_width=True)
 
         by_month_cat, by_cat_total, by_account, in_out_month = aggregate(cat_df)
 
@@ -252,8 +294,7 @@ if uploaded:
         plt.xticks(rotation=45, ha="right")
         st.pyplot(fig3, use_container_width=True)
 
-        # Download-Buttons
-        st.subheader("Export")
+        # Download-Button
         @st.cache_data
         def to_excel_bytes(df_raw, mxc, cat, acc, io_month):
             with pd.ExcelWriter("out.xlsx", engine="openpyxl") as writer:
@@ -268,6 +309,6 @@ if uploaded:
         st.download_button("Excel-Report herunterladen", data=xlsx_bytes, file_name="Haushaltsbuch_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     else:
-        st.info("Bitte mindestens eine Datei hochladen.")
+        st.info("Keine verwertbaren Daten in den hochgeladenen Dateien gefunden.")
 else:
     st.info("Lade deine Bank-CSV/XLSX-Dateien hoch, um zu starten.")
