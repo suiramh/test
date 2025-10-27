@@ -82,7 +82,19 @@ def normalize_schema(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
     if amt_col is not None:
         out["amount"] = _norm_amount(df[amt_col])
     else:
-        out["amount"] = np.nan
+        in_col  = _pick_first(df, ["zahlungseingang","eingang"])
+        out_col = _pick_first(df, ["zahlungsausgang","ausgang"])
+        if in_col or out_col:
+            ein = _norm_amount(df[in_col]) if in_col else pd.Series([np.nan]*len(df))
+            aus = _norm_amount(df[out_col]) if out_col else pd.Series([np.nan]*len(df))
+            amt = pd.Series(np.nan, index=df.index, dtype=float)
+            if in_col:
+                amt = ein
+            if out_col:
+                amt = np.where(~pd.isna(aus), -aus, amt)
+            out["amount"] = amt
+        else:
+            out["amount"] = np.nan
 
     if cur_col is not None:
         cur_series = df[cur_col].astype(str).str.strip().replace({"nan": ""})
@@ -209,6 +221,8 @@ if uploaded:
                 "date": _pick(["buchung","buchungsdatum","datum","date","wertstellungsdatum","wertstellung","valuta"]),
                 "booking_date": _pick(["wertstellungsdatum","wertstellung","valuta"]),
                 "amount": _pick(["betrag","umsatzbetrag","amount"]),
+                "in_col": _pick(["zahlungseingang","eingang"]),
+                "out_col": _pick(["zahlungsausgang","ausgang"]),
                 "currency": _pick(["währung","waehrung","currency","waehrungscode","eur"]),
                 "description_part1": _pick(["buchungstext","text","vermerk"]),
                 "description_part2": _pick(["verwendungszweck","verwendung"]),
