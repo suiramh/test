@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
+import unicodedata
 
 st.set_page_config(
     page_title="Haushaltsbuch Dashboard",
@@ -36,11 +37,23 @@ def _norm_amount(series: pd.Series) -> pd.Series:
     return series.apply(parse_one)
 
 
+def _normalize_header(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s).strip().lower()
+    s = (s.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"))
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
 def _pick_first(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    low = {c.lower(): c for c in df.columns}
+    norm_map = {_normalize_header(c): c for c in df.columns}
     for cand in candidates:
-        for col_lower, orig in low.items():
-            if cand in col_lower:
+        cn = _normalize_header(cand)
+        for nkey, orig in norm_map.items():
+            if cn == nkey or cn in nkey:
                 return orig
     return None
 
@@ -49,14 +62,14 @@ def normalize_schema(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    date_col = _pick_first(df, ["buchung", "datum", "date", "wertstellung", "valuta"])
-    book_col = _pick_first(df, ["wertstellung", "valuta"])
-    amt_col  = _pick_first(df, ["betrag", "amount"])
-    cur_col  = _pick_first(df, ["währung", "waehrung", "currency", "eur"])
-    usage1   = _pick_first(df, ["verwendungszweck", "verwendung"])
-    text_col = _pick_first(df, ["buchungstext", "text", "vermerk"])
-    cp_col   = _pick_first(df, ["auftraggeber", "zahlungsempfänger", "zahlungs", "beguenstigter", "empfänger", "gegenkonto", "counterparty"])
-    iban_col = _pick_first(df, ["iban", "kontonummer", "account"])
+    date_col = _pick_first(df, ["buchung","buchungsdatum","datum","date","wertstellungsdatum","wertstellung","valuta"])
+    book_col = _pick_first(df, ["wertstellungsdatum","wertstellung","valuta"])
+    amt_col  = _pick_first(df, ["betrag","umsatzbetrag","amount"])
+    cur_col  = _pick_first(df, ["währung","waehrung","currency","waehrungscode","eur"])
+    usage1   = _pick_first(df, ["verwendungszweck","verwendung","verwendungszweck1","verwendungszweck2"])
+    text_col = _pick_first(df, ["buchungstext","text","vermerk"])
+    cp_col   = _pick_first(df, ["auftraggeber","auftraggeber/empfänger","auftraggeberempfaenger","zahlungsempfänger","zahlungseingang","beguenstigter","empfänger","gegenkonto","counterparty"])
+    iban_col = _pick_first(df, ["iban","kontonummer","account"])
 
     out = pd.DataFrame()
     if date_col is not None:
@@ -138,9 +151,9 @@ def apply_categories(df: pd.DataFrame, rules: pd.DataFrame) -> pd.DataFrame:
         patt = str(row["pattern"])
         cat  = str(row["category"])
         try:
-            mask = hay.str_contains(patt, case=False, regex=True, na=False)  # pandas 2.1+ alias
-        except Exception:
             mask = hay.str.contains(patt, case=False, regex=True, na=False)
+        except Exception:
+            mask = False
         df.loc[mask, "category"] = cat
     return df
 
@@ -171,36 +184,35 @@ uploaded = st.file_uploader("Bank-Exporte (mehrere Dateien erlaubt)", type=["csv
 rules_file = st.file_uploader("Optional: Regeln (CSV mit Spalten pattern, category)", type=["csv"])
 
 if uploaded:
-    st.info("Nach dem Upload siehst du unten eine **Header‑Mapping‑Preview** pro Datei. So erkennst du, welche Spalten zugeordnet wurden.")
+    st.info("Nach dem Upload siehst du unten eine **Header‑Mapping‑Preview** pro Datei.")
     frames = []
     for up in uploaded:
         try:
             name_lower = up.name.lower()
             if name_lower.endswith((".xlsx", ".xls")):
-                if name_lower.endswith(".xlsx"):
-                    df = pd.read_excel(up, engine="openpyxl")
-                else:
-                    df = pd.read_excel(up, engine="xlrd")
+                # Excel: erstes Blatt
+                df = pd.read_excel(up)  # engines auto
             else:
                 content = up.read()
                 df = pd.read_csv(io.BytesIO(content), sep=None, engine="python")
 
-            # --- Mapping-Preview ---
+            # Mapping-Preview
             low = {c.lower(): c for c in df.columns}
-            def _pick(cands): 
+            def _pick(cands):
+                from collections import OrderedDict
                 for c in cands:
                     for l, o in low.items():
                         if c in l:
                             return o
                 return None
             preview = {
-                "date": _pick(["buchung","datum","date","wertstellung","valuta"]),
-                "booking_date": _pick(["wertstellung","valuta"]),
-                "amount": _pick(["betrag","amount"]),
-                "currency": _pick(["währung","waehrung","currency","eur"]),
+                "date": _pick(["buchung","buchungsdatum","datum","date","wertstellungsdatum","wertstellung","valuta"]),
+                "booking_date": _pick(["wertstellungsdatum","wertstellung","valuta"]),
+                "amount": _pick(["betrag","umsatzbetrag","amount"]),
+                "currency": _pick(["währung","waehrung","currency","waehrungscode","eur"]),
                 "description_part1": _pick(["buchungstext","text","vermerk"]),
                 "description_part2": _pick(["verwendungszweck","verwendung"]),
-                "counterparty": _pick(["auftraggeber","zahlungsempfänger","zahlungs","beguenstigter","empfänger","gegenkonto","counterparty"]),
+                "counterparty": _pick(["auftraggeber","auftraggeber/empfänger","auftraggeberempfaenger","zahlungsempfänger","zahlungseingang","beguenstigter","empfänger","gegenkonto","counterparty"]),
                 "account": _pick(["iban","kontonummer","account"]),
             }
             st.markdown(f"**{up.name}** – erkannte Spalten:")
@@ -211,42 +223,27 @@ if uploaded:
             frames.append(norm)
         except Exception as e:
             st.error(f"Fehler beim Einlesen von {up.name}: {e}")
-    frames = []
-    for up in uploaded:
-        try:
-            name_lower = up.name.lower()
-            if name_lower.endswith((".xlsx", ".xls")):
-                # Excel: lese erstes Blatt
-                if name_lower.endswith(".xlsx"):
-                    df = pd.read_excel(up, engine="openpyxl")
-                else:  # .xls
-                    df = pd.read_excel(up, engine="xlrd")
-            else:
-                # CSV: auto delimiter
-                content = up.read()
-                df = pd.read_csv(io.BytesIO(content), sep=None, engine="python")
-            norm = normalize_schema(df, source_name=up.name)
-            norm["source_file"] = up.name
-            frames.append(norm)
-        except Exception as e:
-            st.error(f"Fehler beim Einlesen von {up.name}: {e}")
 
     if frames:
         raw = pd.concat(frames, ignore_index=True).sort_values("date")
 
-        # --- Zeitraumfilter explizit steuern ---
+        # Zeitraumfilter optional
         st.subheader("Filter")
-        use_date_filter = st.checkbox("Zeitraum filtern", value=False, help="Aktivieren, um einen Zeitraum auszuwählen")
-        if use_date_filter:
+        use_date_filter = st.checkbox("Zeitraum filtern", value=False)
+        if use_date_filter and not raw.empty:
             min_d, max_d = raw["date"].min().date(), raw["date"].max().date()
             start, end = st.date_input("Zeitraum", value=(min_d, max_d))
-            # Falls der Nutzer einen einzelnen Tag wählt, kommt ein date-Objekt zurück
             if isinstance(start, date) and isinstance(end, date):
                 mask = (raw["date"].dt.date >= start) & (raw["date"].dt.date <= end)
                 raw = raw[mask]
 
         # Regeln anwenden
-        rules_df = load_rules_from_csv(rules_file) if rules_file else pd.DataFrame(columns=["pattern","category"])
+        rules_df = pd.DataFrame(columns=["pattern","category"])
+        if rules_file:
+            try:
+                rules_df = pd.read_csv(rules_file)
+            except Exception as e:
+                st.warning(f"Regeln konnten nicht gelesen werden: {e}")
         cat_df = apply_categories(raw, rules_df)
 
         st.subheader("Rohdaten")
