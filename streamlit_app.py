@@ -20,6 +20,9 @@ st.set_page_config(
 # Helpers
 # ------------------------------
 def _norm_amount(series: pd.Series) -> pd.Series:
+    # If already numeric (Excel), keep as-is
+    if pd.api.types.is_numeric_dtype(series):
+        return series.astype(float)
     def parse_one(x):
         if pd.isna(x):
             return np.nan
@@ -67,8 +70,8 @@ def normalize_schema(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
     amt_col  = _pick_first(df, ["betrag","umsatzbetrag","amount"])
     cur_col  = _pick_first(df, ["währung","waehrung","currency","waehrungscode","eur"])
     usage1   = _pick_first(df, ["verwendungszweck","verwendung","verwendungszweck1","verwendungszweck2"])
-    text_col = _pick_first(df, ["buchungstext","text","vermerk"])
-    cp_col   = _pick_first(df, ["auftraggeber","auftraggeber/empfänger","auftraggeberempfaenger","zahlungsempfänger","zahlungseingang","beguenstigter","empfänger","gegenkonto","counterparty"])
+    text_col = _pick_first(df, ["beschreibung","buchungstext","text","vermerk"])
+    cp_col   = _pick_first(df, ["auftraggeber","auftraggeber/empfaenger","auftraggeber/empfänger","auftraggeberempfaenger","zahlungsempfaenger","zahlungsempfänger","beguenstigter","empfaenger","empfänger","gegenkonto","counterparty","beschreibung"])
     iban_col = _pick_first(df, ["iban","kontonummer","account"])
 
     out = pd.DataFrame()
@@ -226,7 +229,7 @@ if uploaded:
                 "currency": _pick(["währung","waehrung","currency","waehrungscode","eur"]),
                 "description_part1": _pick(["buchungstext","text","vermerk"]),
                 "description_part2": _pick(["verwendungszweck","verwendung"]),
-                "counterparty": _pick(["auftraggeber","auftraggeber/empfänger","auftraggeberempfaenger","zahlungsempfänger","zahlungseingang","beguenstigter","empfänger","gegenkonto","counterparty"]),
+                "counterparty": _pick(["auftraggeber","auftraggeber/empfaenger","auftraggeber/empfänger","auftraggeberempfaenger","zahlungsempfaenger","zahlungsempfänger","beguenstigter","empfaenger","empfänger","gegenkonto","counterparty","beschreibung"]),
                 "account": _pick(["iban","kontonummer","account"]),
             }
             st.markdown(f"**{up.name}** – erkannte Spalten:")
@@ -261,7 +264,10 @@ if uploaded:
         cat_df = apply_categories(raw, rules_df)
 
         st.subheader("Rohdaten")
-        st.dataframe(cat_df, use_container_width=True)
+        pretty_df = cat_df.copy()
+        if not pretty_df.empty:
+            pretty_df['date'] = pretty_df['date'].dt.date
+        st.dataframe(pretty_df, use_container_width=True)
 
         by_month_cat, by_cat_total, by_account, in_out_month = aggregate(cat_df)
 
